@@ -6,8 +6,8 @@
 #define SCREEN_HEIGHT 64
 #define OLED_RESET    -1
 #define RELAY_PIN 7
-#define BUTTON_PIN 6
-#define CONFIRM_BUTTON_PIN 5
+#define BUTTON_PIN 5
+#define CONFIRM_BUTTON_PIN 4
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
@@ -21,6 +21,8 @@ unsigned long intervalMillis = 0; // interval duration in milliseconds
 bool timeConfirmed = false; // Variable to indicate if the time has been confirmed
 int confirmedPumpRunTime = 0; // Variable to store the confirmed pump run time
 bool manualOverride = false; // Variable to indicate if manual override is active
+unsigned long pumpStartTime = 0; // Start time for the pump run
+bool pumpRunning = false; // Indicates if the pump is currently running
 
 void setup() {
   Serial.begin(9600);
@@ -49,12 +51,22 @@ void setup() {
   intervalMillis = intervals[currentIntervalIndex] * 3600000UL; // Convert hours to milliseconds
 }
 
-void runPump(int duration) {
+void startPump(int duration) {
+  pumpStartTime = millis();
+  pumpRunning = true;
   digitalWrite(RELAY_PIN, HIGH); // Turn the relay on
-  delay(duration * 1000);        // Keep the relay on for the specified duration (in milliseconds)
-  digitalWrite(RELAY_PIN, LOW);  // Turn the relay off
-  allowPumpRun = false;          // Set allowPumpRun to false to prevent further runs
-  lastRunTime = millis();        // Record the time when the pump was last run
+  Serial.print("Running pump for: ");
+  Serial.print(duration);
+  Serial.println(" seconds");
+}
+
+void stopPump() {
+  digitalWrite(RELAY_PIN, LOW); // Turn the relay off
+  pumpRunning = false;
+  allowPumpRun = false; // Set allowPumpRun to false to prevent further runs
+  lastRunTime = millis(); // Record the time when the pump was last run
+  Serial.println("Pump relay turned off");
+  Serial.println("Pump run completed");
 }
 
 void checkButtons() {
@@ -64,10 +76,12 @@ void checkButtons() {
   if (buttonState == LOW && confirmButtonState == LOW) { // Both buttons pressed
     manualOverride = true;
     digitalWrite(RELAY_PIN, HIGH); // Turn the relay on
+    Serial.println("Manual override activated");
   } else {
     if (manualOverride) {
       manualOverride = false;
       digitalWrite(RELAY_PIN, LOW); // Turn the relay off
+      Serial.println("Manual override deactivated");
     }
 
     if (buttonState == LOW) { // Button pressed
@@ -80,6 +94,9 @@ void checkButtons() {
         }
         intervalMillis = intervals[currentIntervalIndex] * 3600000UL; // Update intervalMillis with the selected interval in milliseconds
         lastDebounceTime = currentTime;
+        Serial.print("Interval set to: ");
+        Serial.print(intervals[currentIntervalIndex]);
+        Serial.println(" hours");
       }
     }
 
@@ -90,6 +107,8 @@ void checkButtons() {
         confirmedPumpRunTime = map(analogRead(A0), 0, 1023, 0, 60); // Update confirmed pump run time in seconds
         timeConfirmed = true;
         lastDebounceTime = currentTime;
+        Serial.print("Confirmed pump run time: ");
+        Serial.println(confirmedPumpRunTime);
       }
     }
   }
@@ -124,12 +143,20 @@ void loop() {
   int pumpRunTime = map(sensorValue, 0, 1023, 0, 60); // Calculate pump run time in seconds (0-60 seconds)
   float estimatedVolume = (pumpRunTime / 60.0) * 10; // Calculate estimated volume (10 liters per minute)
   int interval = intervals[currentIntervalIndex]; // Get the current interval
-  Serial.print("Output Value: ");
-  Serial.print(outputValue);
-  Serial.print(" Pump Run Time: ");
+  int remainingTime = 0; // Remaining time for the pump to run
+  if (pumpRunning) {
+    remainingTime = (pumpStartTime + (confirmedPumpRunTime * 1000UL) - millis()) / 1000;
+  }
+  Serial.print("Sensor Value: ");
+  Serial.print(sensorValue);
+  Serial.print(" Mapped Run Time: ");
   Serial.print(pumpRunTime);
+  Serial.print(" Output Value: ");
+  Serial.print(outputValue);
   Serial.print(" Interval: ");
-  Serial.println(interval);
+  Serial.print(interval);
+  Serial.print(" Remaining Time: ");
+  Serial.println(remainingTime);
 
   // Clear the display
   display.clearDisplay();
@@ -150,8 +177,15 @@ void loop() {
   display.print(estimatedVolume);
   display.print(" L");
 
-  // Print the interval to the display
+  // Print the remaining time to the display
   display.setCursor(0, 40);
+  display.setTextSize(1);
+  display.print("Remaining: ");
+  display.print(remainingTime);
+  display.print(" s");
+
+  // Print the interval to the display
+  display.setCursor(0, 55);
   display.setTextSize(1);
   display.print("Interval: ");
   display.print(interval);
@@ -166,9 +200,16 @@ void loop() {
   // Update the display with the new data
   display.display();
 
+  // Check if the pump should be running and handle the timing
+  if (pumpRunning) {
+    if (millis() - pumpStartTime >= confirmedPumpRunTime * 1000UL) {
+      stopPump();
+    }
+  }
+
   // Run the pump for the confirmed time if allowed and not in manual override
-  if (!manualOverride && timeConfirmed && confirmedPumpRunTime > 0 && allowPumpRun) {
-    runPump(confirmedPumpRunTime);
+  if (!manualOverride && timeConfirmed && confirmedPumpRunTime > 0 && allowPumpRun && !pumpRunning) {
+    startPump(confirmedPumpRunTime);
   }
 
   // Wait for a short period before taking the next reading
